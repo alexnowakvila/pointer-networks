@@ -47,7 +47,7 @@ class DataGenerator(object):
                     writer_outputs_batch[i][b, v[i]+1] = 1.0
 
                 #Write the stop symbol    
-                for i in xrange(len(v), N):
+                for i in range(len(v), N):
                     writer_outputs_batch[i][b, 0] = 1.0
                     if not train_mode:
                         decoder_input_batch[i + 1][b] = sequence[i]

@@ -51,9 +51,20 @@ class PointerNetwork(object):
         self.global_step = tf.Variable(0, trainable=False)
 
         
-        cell = tf.nn.rnn_cell.LSTMCell(size, initializer=tf.random_uniform_initializer(-0.08, 0.08))
-        if num_layers > 1:
-            cell = tf.nn.rnn_cell.MultiRNNCell([cell] * num_layers)
+        # cell = tf.contrib.rnn.GRUCell(size, initializer=tf.random_uniform_initializer(-0.08, 0.08))
+        stacked_rnn_enc = []
+        for iiLyr in range(num_layers):
+            # stacked_rnn_enc.append(tf.nn.rnn_cell.GRUCell(size))
+            stacked_rnn_enc.append(tf.nn.rnn_cell.BasicLSTMCell(size, state_is_tuple=True))
+        cell_enc = tf.nn.rnn_cell.MultiRNNCell(cells=stacked_rnn_enc)
+
+        stacked_rnn_dec = []
+        for iiLyr in range(num_layers):
+            # stacked_rnn_dec.append(tf.nn.rnn_cell.GRUCell(size))
+            stacked_rnn_dec.append(tf.nn.rnn_cell.BasicLSTMCell(size, state_is_tuple=True))
+        cell_dec = tf.nn.rnn_cell.MultiRNNCell(cells=stacked_rnn_dec)
+        # if num_layers > 1:
+        #     cell = tf.contrib.rnn.MultiRNNCell([cell] * num_layers)
             
         self.encoder_inputs = []
         self.decoder_inputs = []
@@ -72,25 +83,25 @@ class PointerNetwork(object):
                 tf.float32, [batch_size, 1], name="TargetWeight%d" % i))
         
         # Need for attention
-        encoder_outputs, final_state = tf.nn.rnn(cell, self.encoder_inputs, dtype = tf.float32)
+        encoder_outputs, final_state = tf.contrib.rnn.static_rnn(cell_enc, self.encoder_inputs, dtype = tf.float32)
         
         # Need a dummy output to point on it. End of decoding.
         encoder_outputs = [tf.zeros([batch_size, size])] + encoder_outputs
 
         # First calculate a concatenation of encoder outputs to put attention on.
-        top_states = [tf.reshape(e, [-1, 1, cell.output_size])
+        top_states = [tf.reshape(e, [-1, 1, cell_enc.output_size])
                       for e in encoder_outputs]
-        attention_states = tf.concat(1, top_states)
+        attention_states = tf.concat(axis=1, values=top_states)
 
         #For training
         with tf.variable_scope("decoder"):
             outputs, states, _ = pointer_decoder(
-                self.decoder_inputs, final_state, attention_states, cell, feed_prev=False, pointer_type=FLAGS.pointer_type)
+                self.decoder_inputs, final_state, attention_states, cell_dec, feed_prev=False, pointer_type=FLAGS.pointer_type)
 
         #For inference
         with tf.variable_scope("decoder", reuse=True):
             predictions, _, inps = pointer_decoder(
-                self.decoder_inputs, final_state, attention_states, cell, feed_prev=True, pointer_type=FLAGS.pointer_type)
+                self.decoder_inputs, final_state, attention_states, cell_dec, feed_prev=True, pointer_type=FLAGS.pointer_type)
             
         self.predictions = predictions
         self.outputs = outputs
@@ -117,18 +128,18 @@ class PointerNetwork(object):
 
         loss = 0.0
         for output, target, weight in zip(self.outputs, self.decoder_targets, self.target_weights):
-            loss += tf.nn.softmax_cross_entropy_with_logits(output, target) * weight
+            loss += tf.nn.softmax_cross_entropy_with_logits(logits=output, labels=target) * weight
 
         loss = tf.reduce_mean(loss)
-        tf.scalar_summary('loss', loss)
+        tf.summary.scalar('loss', loss)
         
         test_loss = 0.0
         for output, target, weight in zip(self.predictions, self.decoder_targets, self.target_weights):
-            test_loss += tf.nn.softmax_cross_entropy_with_logits(output, target) * weight
+            test_loss += tf.nn.softmax_cross_entropy_with_logits(logits=output, labels=target) * weight
         
-        tf.histogram_summary('predictions', self.predictions)
+        tf.summary.histogram('predictions', self.predictions)
         test_loss = tf.reduce_mean(test_loss)
-        tf.scalar_summary('test_loss', test_loss)
+        tf.summary.scalar('test_loss', test_loss)
         optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate)
         train_op = optimizer.minimize(loss)
         
@@ -139,10 +150,10 @@ class PointerNetwork(object):
         correct_order = 0.0
         all_order = 0.0
 
-        predictions_order = tf.concat(0,[tf.expand_dims(prediction , 0) for prediction in self.predictions])
+        predictions_order = tf.concat(axis=0, values=[tf.expand_dims(prediction , 0) for prediction in self.predictions])
         predictions_order = tf.transpose(tf.argmax(predictions_order, 2), perm=[1,0])
         
-        targets_order = tf.concat(0,[tf.expand_dims(target, 0) for target in self.decoder_targets])
+        targets_order = tf.concat(axis=0, values=[tf.expand_dims(target, 0) for target in self.decoder_targets])
 
         targets_order = tf.transpose(tf.argmax(targets_order, 2), perm=[1,0])
         
@@ -150,21 +161,21 @@ class PointerNetwork(object):
         all_order += self.batch_size
 
         acc = correct_order/all_order
-        tf.scalar_summary('accuracy', acc)
+        tf.summary.scalar('accuracy', acc)
 
         sess = tf.Session()
         previous_losses = []
         test_losses = []
         test_accuracies = []
-        merged = tf.merge_all_summaries()
+        merged = tf.summary.merge_all()
 
         #add op to save and restore all the variables
         saver = tf.train.Saver()
 
         with sess.as_default():
-            train_writer = tf.train.SummaryWriter(FLAGS.log_dir + "/" + FLAGS.problem_type +"/" + FLAGS.pointer_type+ "/train", sess.graph)
-            test_writer = tf.train.SummaryWriter(FLAGS.log_dir + "/" + FLAGS.problem_type +"/" + FLAGS.pointer_type + "/test", sess.graph)
-            init = tf.initialize_all_variables()
+            train_writer = tf.summary.FileWriter(FLAGS.log_dir + "/" + FLAGS.problem_type +"/" + FLAGS.pointer_type+ "/train", sess.graph)
+            test_writer = tf.summary.FileWriter(FLAGS.log_dir + "/" + FLAGS.problem_type +"/" + FLAGS.pointer_type + "/test", sess.graph)
+            init = tf.global_variables_initializer()
             sess.run(init)
 
             if FLAGS.load_from_checkpoint:
@@ -172,7 +183,7 @@ class PointerNetwork(object):
                 saver.restore(sess, FLAGS.checkpoint_dir+"/" + FLAGS.pointer_type +  "/model.ckpt")
             print("Training network...")
 
-            for i in xrange(FLAGS.num_steps): 
+            for i in range(FLAGS.num_steps): 
                 encoder_input_data, decoder_input_data, targets_data = dataset.next_batch(
                     self.batch_size, self.max_len, convex_hull=(FLAGS.problem_type=="convex_hull"))
                 # Train

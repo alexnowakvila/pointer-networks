@@ -22,8 +22,6 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-from six.moves import xrange  # pylint: disable=redefined-builtin
-
 import tensorflow as tf
 
 from tensorflow.python.framework import dtypes
@@ -33,10 +31,11 @@ from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import embedding_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_ops
-from tensorflow.python.ops import rnn
 from tensorflow.python.ops import rnn_cell
+from tensorflow.python.ops import rnn
 from tensorflow.python.ops import sparse_ops
 from tensorflow.python.ops import variable_scope as vs
+from tensorflow.contrib.rnn.python.ops import core_rnn_cell
 
 def one_hot(inp, attn_length):
     output = tf.one_hot(tf.argmax(inp, dimension=1),attn_length)
@@ -44,7 +43,8 @@ def one_hot(inp, attn_length):
 
 def multi_hot(inp, attn_length,  threshold=0.3):
     output = tf.maximum(
-        tf.select(tf.greater_equal(inp,tf.fill(tf.shape(inp),threshold)), tf.ones_like(inp) , tf.zeros_like(inp)),
+        tf.select(tf.greater_equal(inp,tf.fill(tf.shape(inp),threshold)),
+                  tf.ones_like(inp) , tf.zeros_like(inp)),
         tf.one_hot(tf.argmax(inp, dimension=1),attn_length))
     #normalize output so each row sums to 1
     normalizer = tf.expand_dims(tf.reduce_sum(output, reduction_indices=1), 1)
@@ -52,7 +52,8 @@ def multi_hot(inp, attn_length,  threshold=0.3):
     return output
 
 def pointer_decoder(decoder_inputs, initial_state, attention_states, cell,
-                    feed_prev=True, dtype=dtypes.float32, scope=None, pointer_type="one_hot"):
+                    feed_prev=True, dtype=dtypes.float32, scope=None,
+                    pointer_type="one_hot"):
     """RNN decoder with pointer net for the sequence-to-sequence model.
     Args:
       decoder_inputs: a list of 2D Tensors [batch_size x cell.input_size].
@@ -79,8 +80,8 @@ def pointer_decoder(decoder_inputs, initial_state, attention_states, cell,
     if not decoder_inputs:
         raise ValueError("Must provide at least 1 input to attention decoder.")
     if not attention_states.get_shape()[1:2].is_fully_defined():
-        raise ValueError("Shape[1] and [2] of attention_states must be known: %s"
-                         % attention_states.get_shape())
+        raise ValueError("Shape[1] and [2] of attention_states must be known:"
+                         " %s" % attention_states.get_shape())
 
     with vs.variable_scope(scope or "point_decoder") as scope:
         batch_size = array_ops.shape(decoder_inputs[0])[0]  # Needed for reshaping.
@@ -102,7 +103,7 @@ def pointer_decoder(decoder_inputs, initial_state, attention_states, cell,
         def attention(query):
             """Point on hidden using hidden_features and query."""
             with vs.variable_scope("Attention"):
-                y = rnn_cell._linear(query, attention_vec_size, True)
+                y = core_rnn_cell._linear(query[-1], attention_vec_size, True)
                 y = array_ops.reshape(y, [-1, 1, 1, attention_vec_size])
                 # Attention mask is a softmax of v^T * tanh(...).
                 a = math_ops.reduce_sum(
@@ -112,18 +113,18 @@ def pointer_decoder(decoder_inputs, initial_state, attention_states, cell,
 
         outputs = []
         prev = None
-        batch_attn_size = array_ops.pack([batch_size, attn_size])
+        batch_attn_size = array_ops.stack([batch_size, attn_size])
         attns = array_ops.zeros(batch_attn_size, dtype=dtype)
 
         attns.set_shape([None, attn_size])
         inps = []
-        for i in xrange(len(decoder_inputs)):
+        for i in range(len(decoder_inputs)):
             if i > 0:
                 vs.get_variable_scope().reuse_variables()
             inp = decoder_inputs[i]
 
             if feed_prev and i > 0:
-                inp = tf.pack(decoder_inputs)
+                inp = tf.stack(decoder_inputs)
                 inp = tf.transpose(inp, perm=[1, 0, 2])
                 inp = tf.reshape(inp, [-1, attn_length, input_size])
                 if pointer_type == "multi_hot":
@@ -140,7 +141,7 @@ def pointer_decoder(decoder_inputs, initial_state, attention_states, cell,
             # Use the same inputs in inference, order internaly
 
             # Merge input and previous attentions into one vector of the right size.
-            x = rnn_cell._linear([inp, attns], cell.output_size, True)
+            x = core_rnn_cell._linear([inp, attns], cell.output_size, True)
             # Run the RNN.
             cell_output, new_state = cell(x, states[-1])
             states.append(new_state)
